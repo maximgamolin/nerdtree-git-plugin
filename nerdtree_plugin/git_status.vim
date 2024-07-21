@@ -112,11 +112,15 @@ endfunction
 " disable ProhibitUnusedVariable because these three functions used to callback
 " vint: -ProhibitUnusedVariable
 function! s:onGitWorkdirSuccessCB(job) abort
-    let g:NTGitWorkdir = split(join(a:job.chunks, ''), "\n")[0]
-    call s:logger.debug(printf("'%s' is in a git repo: '%s'", a:job.opts.cwd, g:NTGitWorkdir))
+    let l:workdir = split(join(a:job.chunks, ''), "\n")[0]
+    if !exists('g:NTGitWorkdirs')
+        let g:NTGitWorkdirs = {}
+    endif
+    let g:NTGitWorkdirs[a:job.opts.cwd] = l:workdir
+    call s:logger.debug(printf("'%s' is in a git repo: '%s'", a:job.opts.cwd, l:workdir))
     call s:enableLiveUpdate()
 
-    call s:refreshGitStatus('init', g:NTGitWorkdir)
+    call s:refreshGitStatus('init', l:workdir)
 endfunction
 
 function! s:onGitWorkdirFailedCB(job) abort
@@ -138,6 +142,18 @@ function! s:getGitWorkdir(ntRoot) abort
                 \ })
 endfunction
 " vint: +ProhibitUnusedVariable
+
+function! s:checkNestedGitDirs(path) abort
+    for dir in split(glob(a:path . '/*'), '\n')
+        if isdirectory(dir)
+            if filereadable(dir . '/.git')
+                call s:getGitWorkdir(dir)
+            else
+                call s:checkNestedGitDirs(dir)
+            endif
+        endif
+    endfor
+endfunction
 
 function! s:buildGitWorkdirCommand(root) abort
     return gitstatus#util#BuildGitWorkdirCommand(a:root, g:)
@@ -189,32 +205,31 @@ endfunction
 
 " FUNCTION: s:onCursorHold(fname) {{{2
 function! s:onCursorHold(fname)
-    " Do not update when a special buffer is selected
     if !empty(&l:buftype)
         return
     endif
-    let l:fname = s:is_win ?
-                \ substitute(a:fname, '\', '/', 'g') :
-                \ a:fname
+    let l:fname = s:is_win ? substitute(a:fname, '\', '/', 'g') : a:fname
 
-    if !exists('g:NTGitWorkdir') || !s:hasPrefix(l:fname, g:NTGitWorkdir)
-        return
-    endif
-
-    let l:job = s:refreshGitStatus('cursor-hold', g:NTGitWorkdir)
-    call s:logger.debug('run cursor-hold job: ' . l:job.id)
+    for workdir in values(g:NTGitWorkdirs)
+        if s:hasPrefix(l:fname, workdir)
+            let l:job = s:refreshGitStatus('cursor-hold', workdir)
+            call s:logger.debug('run cursor-hold job: ' . l:job.id)
+            break
+        endif
+    endfor
 endfunction
 
 " FUNCTION: s:onFileUpdate(fname) {{{2
 function! s:onFileUpdate(fname)
-    let l:fname = s:is_win ?
-                \ substitute(a:fname, '\', '/', 'g') :
-                \ a:fname
-    if !exists('g:NTGitWorkdir') || !s:hasPrefix(l:fname, g:NTGitWorkdir)
-        return
-    endif
-    let l:job = s:refreshGitStatus('file-update', g:NTGitWorkdir)
-    call s:logger.debug('run file-update job: ' . l:job.id)
+    let l:fname = s:is_win ? substitute(a:fname, '\', '/', 'g') : a:fname
+
+    for workdir in values(g:NTGitWorkdirs)
+        if s:hasPrefix(l:fname, workdir)
+            let l:job = s:refreshGitStatus('file-update', workdir)
+            call s:logger.debug('run file-update job: ' . l:job.id)
+            break
+        endif
+    endfor
 endfunction
 " vint: +ProhibitUnusedVariable
 
@@ -304,10 +319,12 @@ endfunction
 " vint: -ProhibitUnusedVariable
 function! s:onNERDTreeDirChanged(path) abort
     call s:getGitWorkdir(a:path)
+    call s:checkNestedGitDirs(a:path)
 endfunction
 
 function! s:onNERDTreeInit(path) abort
     call s:getGitWorkdir(a:path)
+    call s:checkNestedGitDirs(a:path)  " Проверка вложенных репозиториев
 endfunction
 " vint: +ProhibitUnusedVariable
 
